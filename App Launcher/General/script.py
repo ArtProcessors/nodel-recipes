@@ -322,6 +322,9 @@ def _forceKill():
 
   if _bundleId:
     # Try bundle ID first (more reliable for Electron apps)
+    # Escape dots for regex (bundle IDs are like com.apple.Safari)
+    pattern = _bundleId.replace('.', '\\.')
+
     def onBundleKill(result):
       if result.code == 0:
         console.info('App force killed via pkill -f (bundle ID)')
@@ -330,7 +333,7 @@ def _forceKill():
         # Fall back to app name
         tryAppName()
 
-    quick_process(['pkill', '-f', _bundleId], finished=onBundleKill)
+    quick_process(['pkill', '-f', pattern], finished=onBundleKill)
   else:
     tryAppName()
 
