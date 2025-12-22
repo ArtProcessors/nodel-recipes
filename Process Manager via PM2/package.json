@@ -1,0 +1,13 @@
+{
+  "name": "pm2-controller-bridge",
+  "version": "1.0.0",
+  "description": "Node.js bridge for Nodel PM2 Controller recipe",
+  "main": "go.js",
+  "dependencies": {
+    "pm2": "^5.4.3"
+  },
+  "scripts": {
+    "start": "node go.js"
+  },
+  "private": true
+}
