@@ -1,12 +1,12 @@
 '''
 **macOS Computer Controller** with native system operations via Swift companion.
 
-`rev 1 2025.12.23`
+`rev 2 2025.12.23`
 
 Includes:
 
 * sleep, prevent sleep (caffeinate)
-* power settings (WoL, auto-restart, power nap)
+* power settings (WoL, auto-restart, power nap, TCP keep-alive)
 * periodic screenshots
 * volume control, audio metering
 * CPU monitoring
@@ -17,6 +17,7 @@ Requires Xcode Command Line Tools for Swift compilation.
 
 **REVISION HISTORY**
 
+* rev 2: added TCP Keep-Alive control; PowerOff now disables Power Nap and TCP Keep-Alive for true sleep (WoL-compatible)
 * rev 1: initial release
 
 '''
@@ -61,6 +62,8 @@ def _emit_power_settings():
                     local_event_WakeForNetworkAccess.emit(enabled)
                 elif key == 'powernap':
                     local_event_PowerNap.emit(enabled)
+                elif key == 'tcpkeepalive':
+                    local_event_TCPKeepAlive.emit(enabled)
     quick_process(['/usr/bin/pmset', '-g'], finished=on_result)
 
 # -->
@@ -140,8 +143,11 @@ def PowerOff():
         quick_process(['pkill', 'caffeinate'])
         # Disconnect screen sharing sessions (prevents system sleep)
         quick_process(['pkill', 'screensharingd'])
-        # Small delay to let assertions clear, then sleep via AppleScript (more forceful)
-        call(lambda: quick_process(['osascript', '-e', 'tell application "System Events" to sleep']), 1)
+        # Disable Power Nap and TCP Keep-Alive for true sleep (enables WoL)
+        _set_power_setting('powernap', False)
+        _set_power_setting('tcpkeepalive', False)
+        # Delay to let settings apply, then sleep
+        call(lambda: quick_process(['pmset', 'sleepnow']), 2)
 
 @local_action({ 'title': 'Shutdown', 'group': 'Power', 'order': next_seq(),
                 'desc': 'Tries unattended (sudo) first, falls back to attended (AppleScript).',
@@ -257,6 +263,8 @@ local_event_WakeForNetworkAccess = LocalEvent({ 'title': 'Wake for Network Acces
 
 local_event_PowerNap = LocalEvent({ 'title': 'Power Nap', 'group': 'Power Settings', 'order': next_seq(), 'desc': 'If enabled, macOS may wake briefly during sleep to perform background tasks (usually on AC power).', 'schema': { 'type': 'boolean' }})
 
+local_event_TCPKeepAlive = LocalEvent({ 'title': 'TCP Keep-Alive', 'group': 'Power Settings', 'order': next_seq(), 'desc': 'If enabled, maintains network connections during sleep (prevents true sleep, breaks WoL).', 'schema': { 'type': 'boolean' }})
+
 # -->
 
 # <!-- Power Settings actions
@@ -300,6 +308,16 @@ def PowerNap(arg):
         _set_power_setting('powernap', False)
     else:
         console.warn('PowerNap: invalid arg %s' % arg)
+
+@local_action({ 'title': 'TCP Keep-Alive', 'group': 'Power Settings', 'order': next_seq(), 'desc': 'Enable or disable TCP Keep-Alive (pmset tcpkeepalive). Disabling allows true sleep for WoL. Requires sudoers setup.', 'schema': { 'type': 'boolean' } })
+def TCPKeepAlive(arg):
+    console.info('TCPKeepAlive %s action' % arg)
+    if arg in [ True, 1, 'On', 'ON', 'on' ]:
+        _set_power_setting('tcpkeepalive', True)
+    elif arg in [ False, 0, 'Off', 'OFF', 'off' ]:
+        _set_power_setting('tcpkeepalive', False)
+    else:
+        console.warn('TCPKeepAlive: invalid arg %s' % arg)
 
 # -->
 

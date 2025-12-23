@@ -1,0 +1,21 @@
+# Nodel macOS Computer Controller - Privileged Commands
+# Install: sudo ./install-sudoers.sh
+# Remove: sudo rm /etc/sudoers.d/nodel-mac-controller
+
+# Power management settings
+Cmnd_Alias NODEL_PMSET = /usr/bin/pmset -a womp 0, \
+                         /usr/bin/pmset -a womp 1, \
+                         /usr/bin/pmset -a autorestart 0, \
+                         /usr/bin/pmset -a autorestart 1, \
+                         /usr/bin/pmset -a networkoversleep 0, \
+                         /usr/bin/pmset -a networkoversleep 1, \
+                         /usr/bin/pmset -a powernap 0, \
+                         /usr/bin/pmset -a powernap 1, \
+                         /usr/bin/pmset -a tcpkeepalive 0, \
+                         /usr/bin/pmset -a tcpkeepalive 1
+
+# Unattended shutdown/restart
+Cmnd_Alias NODEL_SHUTDOWN = /sbin/shutdown -h now, /sbin/shutdown -r now
+
+# Allow all users without password
+ALL ALL=(ALL) NOPASSWD: NODEL_PMSET, NODEL_SHUTDOWN

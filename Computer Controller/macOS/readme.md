@@ -2,7 +2,7 @@
 
 A macOS-specific Computer Controller node with deep OS integration via a Swift companion process.
 
-`REV 1.20251222`
+`REV 2.20251223`
 
 ## Features
 
@@ -34,7 +34,7 @@ The node will emit `PermissionNeeded` events and console warnings if permissions
 ### Elevated Commands Setup (Optional)
 
 Some actions require administrator privileges to modify system settings:
-- **Power Settings**: WakeOnLAN, AutoRestartOnPowerLoss, WakeForNetworkAccess, PowerNap
+- **Power Settings**: WakeOnLAN, AutoRestartOnPowerLoss, WakeForNetworkAccess, PowerNap, TCPKeepAlive
 - **Unattended Power**: ShutdownUnattended, RestartUnattended
 
 Without setup, these actions will log warnings and have no effect.
@@ -89,6 +89,7 @@ sudo rm /etc/sudoers.d/nodel-mac-controller
 | AutoRestartOnPowerLoss | Power Settings | Toggle auto-restart after power loss (pmset autorestart) |
 | WakeForNetworkAccess | Power Settings | Toggle wake for network access (pmset networkoversleep) |
 | PowerNap | Power Settings | Toggle Power Nap (pmset powernap) |
+| TCPKeepAlive | Power Settings | Toggle TCP Keep-Alive (pmset tcpkeepalive) |
 | PowerOff | Power | Sleep (WOL compatible) or Shutdown based on parameter |
 | Shutdown | Power | Full shutdown (not WOL recoverable) |
 | Restart | Power | Restart the system |
@@ -115,6 +116,7 @@ sudo rm /etc/sudoers.d/nodel-mac-controller
 | AutoRestartOnPowerLoss | Power Settings | Auto-restart after power loss enabled (pmset autorestart) |
 | WakeForNetworkAccess | Power Settings | Wake for network access enabled (pmset networkoversleep) |
 | PowerNap | Power Settings | Power Nap enabled (pmset powernap) |
+| TCPKeepAlive | Power Settings | TCP Keep-Alive enabled (pmset tcpkeepalive) |
 | Status | Status | Disk space warnings |
 
 ## Parameters
@@ -212,7 +214,22 @@ sudo pmset -a womp 1
 
 macOS WOL requires the system to be in sleep state, not fully powered off. Use the `PowerOff` action with "Sleep" mode (default), not "Shutdown".
 
-**3. Check network interface supports WOL:**
+**3. Disable Power Nap and TCP Keep-Alive for true sleep:**
+
+If Power Nap or TCP Keep-Alive are enabled, macOS enters "Dark Wake" instead of true sleep. In Dark Wake, the network stack stays active and WoL magic packets don't trigger a full wake.
+
+```bash
+# Check current settings
+pmset -g | grep -E 'powernap|tcpkeepalive'
+
+# Disable for true sleep (WoL compatible)
+sudo pmset -a powernap 0
+sudo pmset -a tcpkeepalive 0
+```
+
+The `PowerOff` action automatically disables these settings before sleeping.
+
+**4. Check network interface supports WOL:**
 ```bash
 pmset -g assertions | grep MAGICWAKE
 # Should show entries for en0/en1
