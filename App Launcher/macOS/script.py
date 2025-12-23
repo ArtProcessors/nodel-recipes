@@ -2,7 +2,7 @@
 **macOS App Launcher** - LaunchServices-based application launcher with foreground
 activation, auto-restart with exponential backoff, and interruption detection.
 
-`REV 1.20251222`
+`rev 9 2025.12.23`
 
 ## Features
 
@@ -15,6 +15,10 @@ activation, auto-restart with exponential backoff, and interruption detection.
 7. Interruption detection and status warnings
 
 See `README.md` for expanded details.
+
+**REVISION HISTORY**
+
+* rev 9: refactored AppleScript helpers to reduce duplication
 '''
 
 # --- Parameters ---
@@ -152,9 +156,41 @@ _restartAttempts = 0
 _lastRestartTime = None
 _stableStartTime = None
 _restartState = 'normal'  # 'normal', 'restarting', 'backoff', 'failed'
+_permissionWarned = False  # Track if we've warned about AppleScript permissions
 
 
 # --- Helper Functions ---
+
+def _escapeAppleScriptString(s):
+  """Escape a string for safe embedding in AppleScript."""
+  if not s:
+    return ''
+  return s.replace('\\', '\\\\').replace('"', '\\"')
+
+def _buildAppRef():
+  """Return AppleScript app reference: 'application id "x"' or 'application "x"'."""
+  if _bundleId:
+    return 'application id "%s"' % _escapeAppleScriptString(_bundleId)
+  return 'application "%s"' % _escapeAppleScriptString(_appName)
+
+def _buildSystemEventsContains(prop, value):
+  """Build AppleScript to check if a process property list contains value."""
+  return '''tell application "System Events"
+  set vals to %s of every process
+  return vals contains "%s"
+end tell''' % (prop, _escapeAppleScriptString(value))
+
+def _buildStatusCheckScript():
+  """Build AppleScript to check if app is running.
+
+  Returns (script, checkType) where checkType is 'bundle' or 'name'.
+  Returns (None, None) if no identifier available.
+  """
+  if _bundleId:
+    return _buildSystemEventsContains('bundle identifier', _bundleId), 'bundle'
+  if _appName:
+    return _buildSystemEventsContains('name', _appName), 'name'
+  return None, None
 
 def _extractBundlePath(path):
   """Extract .app bundle path from a binary path inside Contents/MacOS/"""
@@ -203,7 +239,7 @@ def _launch():
       local_event_LastStarted.emit(str(date_now()))
 
       # Always activate after launch (needed for fullscreen, good default behavior)
-      call(_activate, 1)  # delay 1 sec for app to initialize
+      call(_activate, 3)  # delay 3 sec for Electron apps to initialize
     else:
       console.error('Failed to launch: %s' % (result.stderr or result.stdout or 'unknown error'))
 
@@ -219,24 +255,50 @@ def _launch():
   console.info('Launching: %s' % ' '.join(cmd))
   quick_process(cmd, finished=onLaunched)
 
+_activateRetries = [0]  # Track retry count in list for closure access
+
 def _activate():
-  """Bring app to foreground using osascript"""
-  if _bundleId:
-    script = 'tell application id "%s" to activate' % _bundleId
-  elif _appName:
-    script = 'tell application "%s" to activate' % _appName
-  else:
-    console.warn('Activation skipped: no bundleId or appName')
+  """Bring app to foreground using osascript with retry logic"""
+  if not _appName:
+    console.warn('Activation skipped: no appName')
     return
+
+  # Wait for process to exist, then activate and set frontmost
+  escapedName = _escapeAppleScriptString(_appName)
+  script = '''tell application "System Events"
+  repeat 10 times
+    if exists process "%s" then exit repeat
+    delay 0.5
+  end repeat
+end tell
+tell %s to activate
+delay 0.3
+tell application "System Events"
+  if exists process "%s" then
+    set frontmost of process "%s" to true
+  end if
+end tell''' % (escapedName, _buildAppRef(), escapedName, escapedName)
 
   def onActivate(result):
     if result.code == 0:
       console.info('App activated (brought to foreground)')
+      _activateRetries[0] = 0
       # Enter fullscreen if enabled (delay to let window settle)
       if param_FullScreen:
         call(_enterFullScreen, 1)
+      # Kiosk mode: hide cursor
+      call(_hideCursor, 2)
     else:
-      console.warn('Activation failed: %s' % (result.stderr or 'unknown error'))
+      # Retry up to 3 times with increasing delay
+      if _activateRetries[0] < 3:
+        _activateRetries[0] += 1
+        console.warn('Activation attempt %s failed, retrying in 2s...' % _activateRetries[0])
+        call(_activate, 2)
+      else:
+        console.warn('Activation failed after retries: %s' % (result.stderr or 'unknown error'))
+        _activateRetries[0] = 0
+        # Still try kiosk functions even if activation failed
+        call(_hideCursor, 1)
 
   quick_process(['osascript', '-e', script], finished=onActivate)
 
@@ -283,6 +345,22 @@ end tell
 
   quick_process(['osascript', '-e', script], finished=onKeystroke)
 
+def _hideCursor():
+  """Move cursor to bottom-right corner off-screen (kiosk mode)"""
+  # CGWarpMouseCursorPosition uses Quartz coords: (0,0) is top-left, Y increases downward
+  script = '''
+use framework "Foundation"
+use framework "AppKit"
+set screenFrame to current application's NSScreen's mainScreen()'s frame()
+set screenWidth to item 1 of item 2 of screenFrame
+set screenHeight to item 2 of item 2 of screenFrame
+-- Move to bottom-right, off-screen (Quartz: Y increases downward)
+set targetPoint to current application's NSMakePoint(screenWidth + 50, screenHeight + 50)
+current application's CGWarpMouseCursorPosition(targetPoint)
+'''
+  quick_process(['osascript', '-e', script], finished=lambda r:
+    console.info('Cursor hidden (bottom-right)') if r.code == 0 else console.warn('Hide cursor failed: %s' % r.stderr))
+
 def _stop():
   """Stop app gracefully via osascript, fallback to pkill"""
   if not _appName:
@@ -298,23 +376,74 @@ def _stop():
       console.warn('Graceful quit failed, attempting pkill fallback...')
       _forceKill()
 
-  if _bundleId:
-    script = 'tell application id "%s" to quit' % _bundleId
-  else:
-    script = 'tell application "%s" to quit' % _appName
-
+  script = 'tell %s to quit' % _buildAppRef()
   quick_process(['osascript', '-e', script], finished=onQuit)
 
 def _forceKill():
-  """Force kill app using pkill as fallback"""
-  def onKill(result):
-    if result.code == 0:
-      console.info('App force killed via pkill')
-    else:
-      console.warn('pkill failed (app may have already closed)')
-    local_event_Running.emit('Off')
+  """Force kill app - tries bundle ID match first, then app name"""
 
-  quick_process(['pkill', '-x', _appName], finished=onKill)
+  def tryAppName():
+    """Fallback: kill by app name"""
+    def onKill(result):
+      if result.code == 0:
+        console.info('App force killed via pkill -x')
+      else:
+        console.warn('pkill failed (app may have already closed)')
+      local_event_Running.emit('Off')
+
+    quick_process(['pkill', '-x', _appName], finished=onKill)
+
+  if _bundleId:
+    # Try bundle ID first (more reliable for Electron apps)
+    # Escape dots for regex (bundle IDs are like com.apple.Safari)
+    pattern = _bundleId.replace('.', '\\.')
+
+    def onBundleKill(result):
+      if result.code == 0:
+        console.info('App force killed via pkill -f (bundle ID)')
+        local_event_Running.emit('Off')
+      else:
+        # Fall back to app name
+        tryAppName()
+
+    quick_process(['pkill', '-f', pattern], finished=onBundleKill)
+  else:
+    tryAppName()
+
+def _isAppRunning(callback):
+  """Check if app is running. Uses AppleScript (reliable for Electron), falls back to pgrep."""
+  global _permissionWarned
+
+  def fallbackToPgrep():
+    """Fallback to pgrep -x when AppleScript fails"""
+    global _permissionWarned
+    if not _permissionWarned:
+      _permissionWarned = True
+      console.warn('AppleScript failed (permissions?) - falling back to pgrep for status detection')
+
+    def onPgrep(result):
+      callback(result.code == 0)
+
+    quick_process(['pgrep', '-x', _appName], finished=onPgrep)
+
+  script, checkType = _buildStatusCheckScript()
+  if not script:
+    callback(False)
+    return
+
+  def onResult(result):
+    if result.code == 0:
+      # AppleScript returns "true" or "false"
+      isRunning = result.stdout.strip().lower() == 'true'
+      callback(isRunning)
+    else:
+      # AppleScript failed - fall back to pgrep
+      if _appName:
+        fallbackToPgrep()
+      else:
+        callback(False)
+
+  quick_process(['osascript', '-e', script], finished=onResult)
 
 
 # --- Status Polling ---
@@ -323,12 +452,11 @@ def _pollStatus():
   """Poll running state every 5 seconds"""
   global _restartAttempts, _stableStartTime, _restartState
 
-  if _appName is None:
+  if _bundleId is None and _appName is None:
     return  # Not initialized yet
 
-  def onCheck(result):
+  def onCheck(isRunning):
     global _restartAttempts, _stableStartTime, _restartState
-    isRunning = result.code == 0
     currentState = local_event_Running.getArg()
     desired = local_event_DesiredPower.getArg()
     now = date_now()
@@ -356,7 +484,7 @@ def _pollStatus():
         # App died while desired On - handle restart with backoff
         _handleInterruption(now)
 
-  quick_process(['pgrep', '-x', _appName], finished=onCheck)
+  _isAppRunning(onCheck)
 
 def _handleInterruption(now):
   """Handle app interruption with exponential backoff restart logic"""
@@ -601,10 +729,10 @@ def _toBriefTime(dateTime):
 def _decodeArgList(argsString):
   """
   Decode a process arg list string into an array of strings.
-  Supports backslash escaping and quoting.
+  Supports backslash escaping and double-quote grouping.
 
-  Example: --name "Peter Parker" --character Spider\ Man
-  Returns: ['--name', '"Peter Parker"', '--character', 'Spider Man']
+  Example: --name "Peter Parker" --hero Spider\ Man
+  Returns: ['--name', 'Peter Parker', '--hero', 'Spider Man']
   """
   argsList = []
   escaping = False
@@ -612,30 +740,22 @@ def _decodeArgList(argsString):
   currentArg = []
 
   for c in argsString:
-    # Handle escape sequences
+    # Handle escape: next char is literal
     if escaping:
       escaping = False
-      currentArg.append('\\')
-      currentArg.append(c)
+      currentArg.append(c)  # Append escaped char only (not the backslash)
       continue
 
     if c == '\\':
       escaping = True
       continue
 
-    # Handle quotes
+    # Handle quotes: toggle quoting mode, don't include quote char
     if c == '"':
-      currentArg.append(c)
-      if quoting:
-        # Close quote - finalize this arg
-        quoting = False
-        argsList.append(''.join(currentArg))
-        currentArg = []
-      else:
-        quoting = True
+      quoting = not quoting
       continue
 
-    # Handle spaces (delimiter when not quoting)
+    # Handle spaces: delimiter when not quoting
     if c == ' ' and not quoting:
       if currentArg:
         argsList.append(''.join(currentArg))
@@ -645,7 +765,7 @@ def _decodeArgList(argsString):
     # Regular character
     currentArg.append(c)
 
-  # Don't forget trailing arg
+  # Trailing arg
   if currentArg:
     argsList.append(''.join(currentArg))
 
