@@ -461,7 +461,7 @@ def getExtendedDisplayStatus():
 def emitAndLogIfDifferent(name, signal, state):
   prev = signal.getArg()
   if state != prev:
-    console.warn('"%s" warning detected!') if state else console.info('%s" warning cleared')
+    console.warn('"%s" warning detected!' % name) if state else console.info('"%s" warning cleared' % name)
   signal.emit(state)
 
 getExtendedDisplayStatusAction = Action('GetExtendedDisplayStatus', lambda arg: getExtendedDisplayStatus(), {'group': 'General', 'order': next_seq()})
